@@ -160,7 +160,7 @@ class Reporter:
         if result.has_blocking_issues(block_on_warning):
             print(
                 self._c(
-                    "\n  🚫  Push BLOCKED — fix the violations above and try again.\n",
+                    "\n  🚫  Commit BLOCKED — fix the violations above and try again.\n",
                     _RED, _BOLD,
                 )
             )
