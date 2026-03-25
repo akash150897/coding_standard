@@ -1,7 +1,8 @@
-"""Runs ESLint (JS/TS) or flake8/ruff (Python) on the files being committed."""
+"""Runs ESLint (JS/TS) or ruff/flake8 (Python) on the files being committed."""
 
 import subprocess
 import shutil
+import sys
 import os
 from pathlib import Path
 from typing import List, Optional
@@ -54,36 +55,45 @@ def run_linting(
 # ── Python ────────────────────────────────────────────────────────────────────
 
 def _run_python_linter(files: List[str], linter: str) -> int:
-    """Run ruff or flake8 on Python files."""
+    """Run ruff or flake8 on Python files.
+
+    ruff is a required dependency so it is always available — no skip path.
+    """
     tool = _pick_python_linter(linter)
 
     if tool is None:
+        # Only reachable when preference="flake8" and flake8 is not installed
         print(
-            f"{_YELLOW}[LINT] No Python linter found. "
-            f"Install ruff (`pip install ruff`) or flake8 (`pip install flake8`).{_RESET}"
+            f"{_YELLOW}[LINT] flake8 not found. "
+            f"Falling back to ruff (bundled).{_RESET}"
         )
-        return 0  # Skip, don't block
+        tool = f"{sys.executable} -m ruff"
 
-    print(f"\n{_CYAN}{_BOLD}── Python Linting ({tool}) {'─' * 40}{_RESET}")
+    label = "ruff" if "ruff" in tool else "flake8"
+    print(f"\n{_CYAN}{_BOLD}── Python Linting ({label}) {'─' * 40}{_RESET}")
 
-    if tool == "ruff":
-        return _run_subprocess([tool, "check", "--output-format=concise"] + files)
-    else:  # flake8
+    if "flake8" in tool:
         return _run_subprocess([tool, "--max-line-length=120"] + files)
+    else:
+        # ruff — works both as "ruff" binary and "python -m ruff"
+        cmd = tool.split() + ["check", "--output-format=concise"] + files
+        return _run_subprocess(cmd)
 
 
 def _pick_python_linter(preference: str) -> Optional[str]:
-    """Return the linter binary to use, or None if nothing is installed."""
-    if preference == "ruff":
-        return "ruff" if shutil.which("ruff") else None
+    """Return the linter binary to use.
+
+    ruff is a required dependency so it is always available via
+    'python -m ruff' even if the ruff binary is not on PATH.
+    """
     if preference == "flake8":
         return "flake8" if shutil.which("flake8") else None
-    # auto — prefer ruff (faster), fallback to flake8
+
+    # ruff: try the binary first, fall back to python -m ruff
     if shutil.which("ruff"):
         return "ruff"
-    if shutil.which("flake8"):
-        return "flake8"
-    return None
+    # ruff is bundled as a dependency — always runnable via the current interpreter
+    return f"{sys.executable} -m ruff"
 
 
 # ── JavaScript / TypeScript ───────────────────────────────────────────────────

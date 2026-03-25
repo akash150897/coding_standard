@@ -27,6 +27,7 @@ setup(
     include_package_data=True,
     install_requires=[
         "pyyaml>=6.0",
+        "ruff>=0.1.0",
     ],
     extras_require={
         "dev": [
