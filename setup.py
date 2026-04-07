@@ -30,6 +30,7 @@ setup(
         "pyyaml>=6.0",
         "ruff>=0.1.0",
         "groq>=0.9.0",
+        "requests>=2.31.0",
     ],
     extras_require={
         "dev": [

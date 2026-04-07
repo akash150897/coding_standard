@@ -224,18 +224,18 @@ def _post_review_to_server(
     repo_root: Optional[str] = None,
     critical_issues: Optional[list] = None,
 ) -> None:
-    """Silently POST review result to CRA server. Never raises — commit must not be blocked."""
+    """Save review to local SQLite store and trigger daily report if due.
+    Never raises — a store failure must never block a commit.
+    """
     try:
         from agent.git.hook_installer import load_cra_config
-        import requests
+        from agent.local_store import save_review, check_and_send_report
 
-        from agent.git.hook_installer import _CRA_SERVER_URL
         cra_cfg = load_cra_config(repo_root=repo_root)
-        server_url = _CRA_SERVER_URL.strip()
-        project_key = cra_cfg.get("project_key", "").strip()
+        project_key     = cra_cfg.get("project_key", "").strip()
         developer_email = cra_cfg.get("developer_email", "").strip()
 
-        if not server_url or not project_key or not developer_email:
+        if not project_key or not developer_email:
             return  # not configured — skip silently
 
         # Categorize violations by type
@@ -243,7 +243,7 @@ def _post_review_to_server(
         quality_issues = 0
         style_issues = 0
         performance_issues = 0
-        
+
         for v in result.violations:
             category = v.category.lower()
             if category in ("security", "secrets", "authentication", "authorization"):
@@ -255,32 +255,31 @@ def _post_review_to_server(
             elif category in ("performance", "optimization", "efficiency"):
                 performance_issues += 1
             else:
-                # Default to quality for uncategorized
                 quality_issues += 1
 
-        requests.post(
-            f"{server_url.rstrip('/')}/api/reviews/submit",
-            json={
-                "developer_email": developer_email,
-                "project_key": project_key,
-                "language": language,
-                "framework": framework,
-                "quality_score": None,  # rule-only review has no numeric score
-                "high_issues": len([v for v in result.violations if v.severity == "error"]),
-                "medium_issues": len([v for v in result.violations if v.severity == "warning"]),
-                "low_issues": len([v for v in result.violations if v.severity not in ("error", "warning")]),
-                "blocked": blocked,
-                "files_reviewed": result.files_scanned,
-                "security_issues": security_issues,
-                "quality_issues": quality_issues,
-                "style_issues": style_issues,
-                "performance_issues": performance_issues,
-                "critical_issues": (critical_issues or [])[:20],  # cap at 20 items
-            },
-            timeout=5,
+        save_review(
+            developer_email=developer_email,
+            project_key=project_key,
+            language=language,
+            framework=framework or "",
+            quality_score=None,  # rule-only review has no numeric score
+            high_issues=len([v for v in result.violations if str(getattr(v.severity, "value", v.severity)) == "error"]),
+            medium_issues=len([v for v in result.violations if str(getattr(v.severity, "value", v.severity)) == "warning"]),
+            low_issues=len([v for v in result.violations if str(getattr(v.severity, "value", v.severity)) not in ("error", "warning")]),
+            blocked=blocked,
+            files_reviewed=result.files_scanned,
+            security_issues=security_issues,
+            quality_issues=quality_issues,
+            style_issues=style_issues,
+            performance_issues=performance_issues,
+            critical_issues=(critical_issues or [])[:20],
         )
+
+        # Trigger daily report if it is past 6:30 PM IST and not yet sent today
+        check_and_send_report(project_key, developer_email)
+
     except Exception:
-        pass  # never block a commit because the reporting server is unreachable
+        pass  # never block a commit because of a store failure
 
 
 def run_as_hook() -> None:

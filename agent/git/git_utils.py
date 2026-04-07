@@ -97,6 +97,29 @@ def parse_pre_push_stdin() -> List[Tuple[str, str, str, str]]:
     return refs
 
 
+def _filter_gitignored(files: List[str], cwd: Optional[str] = None) -> List[str]:
+    """Remove files that .gitignore marks as ignored.
+
+    Uses ``git check-ignore`` so the result is always consistent with git's
+    own view of the repository.  If the command is unavailable the original
+    list is returned unchanged so the caller is never blocked.
+    """
+    if not files:
+        return files
+    try:
+        result = subprocess.run(
+            ["git", "check-ignore", "--stdin", "-z"],
+            input="\0".join(files),
+            capture_output=True,
+            text=True,
+            cwd=cwd,
+        )
+        ignored = set(result.stdout.split("\0")) if result.stdout else set()
+        return [f for f in files if f not in ignored]
+    except Exception:
+        return files  # never block a review because check-ignore is unavailable
+
+
 def collect_files_for_push() -> List[str]:
     """Entry point for the pre-push hook to collect all files being pushed.
 
@@ -123,7 +146,7 @@ def collect_files_for_push() -> List[str]:
         if f not in seen:
             seen.add(f)
             unique.append(f)
-    return unique
+    return _filter_gitignored(unique)
 
 
 def file_exists_in_repo(rel_path: str) -> bool:
@@ -172,4 +195,4 @@ def scan_directory(
             if Path(fname).suffix.lower() in exts:
                 results.append(str(Path(dirpath) / fname))
 
-    return sorted(results)
+    return sorted(_filter_gitignored(results, root))

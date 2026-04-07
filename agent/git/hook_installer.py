@@ -94,10 +94,6 @@ _CRA_CONFIG = Path.home() / ".cra" / "config.json"
 _REPO_PROJECT_KEY_FILE = ".git/cra_project_key"   # relative to repo root, not tracked by git
 
 
-_CRA_SERVER_URL = "https://your-cra-server.up.railway.app"
-
-# ── Server config ──────────────────────────────────────────────────────────────
-
 def _get_git_identity() -> tuple:
     """Read developer name and email from git global config."""
     try:
@@ -163,24 +159,19 @@ def load_cra_config(repo_root: Optional[str] = None) -> dict:
     return config
 
 
-def _register_on_server(name: str, email: str, project_key: str, server_url: str) -> bool:
-    """Register developer on the CRA server."""
+def _register_on_server(name: str, email: str, project_key: str) -> bool:
+    """Confirm the project_key is valid in the local store."""
     try:
-        import requests as req
-        response = req.post(
-            f"{server_url.rstrip('/')}/api/developers/register",
-            json={"name": name, "email": email, "project_key": project_key},
-            timeout=10,
-        )
-        if response.status_code == 200:
-            data = response.json()
-            print(f"[OK] Registered in project '{data.get('project')}' — TL: {data.get('tl')}")
+        from agent.local_store import save_developer
+        result = save_developer(name, email, project_key)
+        if result:
+            print(f"[OK] Registered in project '{result['project']}' — TL: {result['tl']}")
             return True
         else:
-            print(f"[WARNING] Server registration failed: {response.status_code}")
+            print(f"[WARNING] Project key '{project_key}' not found in local store.")
             return False
     except Exception as e:
-        print(f"[WARNING] Could not reach server: {e}")
+        print(f"[WARNING] Local registration failed: {e}")
         return False
 
 
@@ -228,25 +219,42 @@ def _prompt_developer_setup(repo_root: Optional[str] = None) -> None:
         print("[WARNING] Name/email required — skipping registration.")
         return
 
-    server_url = _CRA_SERVER_URL
-    print(f"\n  Server     : {server_url}")
+    # ── Auto-read project config from cra-project.json in the repo ────────────
+    project_key = ""
+    if root:
+        import json as _json
+        config_file = Path(root) / "cra-project.json"
+        if config_file.exists():
+            try:
+                project_config = _json.loads(config_file.read_text(encoding="utf-8"))
+                project_key = project_config.get("project_key", "").strip()
+                if project_key:
+                    # Import the project config into this developer's local DB
+                    from agent.local_store import save_project_from_config
+                    save_project_from_config(project_config)
+                    print(f"\n  [INFO] Project config loaded from cra-project.json")
+                    print(f"  Project : {project_config.get('name', '')}")
+                    print(f"  TL      : {project_config.get('tl_name', '')} ({project_config.get('tl_email', '')})")
+            except Exception as e:
+                print(f"[WARNING] Could not read cra-project.json: {e}")
 
-    # ask for project key
-    try:
-        project_key = input("  Enter Project Key (get from your TL): ").strip()
-    except KeyboardInterrupt:
-        print("\n[WARNING] Skipped.")
-        return
+    # Fall back to manual entry if no config file found
+    if not project_key:
+        print("\n  [INFO] No cra-project.json found in this repo.")
+        try:
+            project_key = input("  Enter Project Key (get from your TL): ").strip()
+        except KeyboardInterrupt:
+            print("\n[WARNING] Skipped.")
+            return
 
     if not project_key:
         print("[WARNING] Project key required — skipping registration.")
         return
 
-    # register on server
-    success = _register_on_server(name, email, project_key, server_url)
+    # register developer in local store
+    success = _register_on_server(name, email, project_key)
 
     # save global fields (name, email) to ~/.cra/config.json
-    # server_url is hardcoded in the package — no need to store it
     _save_cra_config({
         "developer_name": name,
         "developer_email": email,
@@ -272,19 +280,9 @@ def _load_global_config() -> dict:
         return {}
 
 
-def _ask_server_url() -> str:
-    """Prompt for CRA server URL."""
-    try:
-        return input("\n  Enter CRA Server URL (e.g. https://your-server.com): ").strip()
-    except KeyboardInterrupt:
-        return ""
-
-
 def prompt_tl_setup() -> None:
     """Interactive TL project setup — called by `cra setup` command."""
     print("\n[SETUP] Create a new CRA project (TL)\n" + "─" * 40)
-    server_url = _CRA_SERVER_URL
-    print(f"  Server: {server_url}\n")
 
     try:
         project_name = input("  Project name                                          : ").strip()
@@ -299,29 +297,36 @@ def prompt_tl_setup() -> None:
         return
 
     try:
-        import requests as req
-        response = req.post(
-            f"{server_url.rstrip('/')}/api/projects/create",
-            json={
-                "name": project_name,
-                "tl_name": tl_name,
-                "tl_email": tl_email,
-                # flow_url not sent — server uses FLOW_URL env var automatically
-            },
-            timeout=10,
+        from agent.local_store import save_project
+        project_key = save_project(
+            name=project_name,
+            tl_name=tl_name,
+            tl_email=tl_email,
         )
-        if response.status_code == 200:
-            data = response.json()
-            print("\n" + "=" * 50)
-            print(f"  Project created: {project_name}")
-            print(f"  Project Key    : {data['project_key']}")
-            print("=" * 50)
-            print("\n  Share this project_key with your team developers.")
-            print("  They will enter it during  cra install\n")
-        else:
-            print(f"[ERROR] Server returned {response.status_code}: {response.text}")
+
+        import json as _json
+        from agent.git.git_utils import get_repo_root
+        repo_root = get_repo_root() or os.getcwd()
+        config_file = Path(repo_root) / "cra-project.json"
+        config_data = {
+            "project_key": project_key,
+            "name": project_name,
+            "tl_name": tl_name,
+            "tl_email": tl_email,
+        }
+        config_file.write_text(_json.dumps(config_data, indent=2), encoding="utf-8")
+
+        print("\n" + "=" * 50)
+        print(f"  Project created : {project_name}")
+        print(f"  Project Key     : {project_key}")
+        print(f"  Config file     : cra-project.json  (commit this to your repo)")
+        print("=" * 50)
+        print("\n  Next steps:")
+        print("  1. Commit cra-project.json to the repo")
+        print("  2. Developers run  cra install  — config is read automatically")
+        print("  3. Every machine will send its own daily report to the TL at 6:30 PM IST\n")
     except Exception as e:
-        print(f"[ERROR] Could not reach server: {e}")
+        print(f"[ERROR] Could not save project locally: {e}")
 
 
 def _ask_name_email() -> tuple:
