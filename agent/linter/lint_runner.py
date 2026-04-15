@@ -176,8 +176,11 @@ def _ensure_eslint(project_root: str, framework: Optional[str]) -> None:
         return  # Not an npm project
 
     print(f"{_CYAN}[LINT] ESLint not found — installing automatically...{_RESET}")
+    packages = ["eslint", "eslint-plugin-unused-imports"]
+    if _project_has_typescript(project_root):
+        packages += ["@typescript-eslint/parser", "@typescript-eslint/eslint-plugin"]
     result = subprocess.run(
-        ["npm", "install", "--save-dev", "eslint", "eslint-plugin-unused-imports"],
+        ["npm", "install", "--save-dev"] + packages,
         cwd=project_root,
         capture_output=True,
         text=True,
@@ -216,8 +219,13 @@ def _ensure_unused_imports_plugin(project_root: str) -> None:
         return
 
     print(f"{_CYAN}[LINT] Installing eslint-plugin-unused-imports for auto-fix support...{_RESET}")
+    packages = ["eslint-plugin-unused-imports"]
+    if _project_has_typescript(project_root):
+        ts_parser_path = Path(project_root) / "node_modules" / "@typescript-eslint" / "parser"
+        if not ts_parser_path.exists():
+            packages += ["@typescript-eslint/parser", "@typescript-eslint/eslint-plugin"]
     result = subprocess.run(
-        ["npm", "install", "--save-dev", "eslint-plugin-unused-imports"],
+        ["npm", "install", "--save-dev"] + packages,
         cwd=project_root,
         capture_output=True,
         text=True,
@@ -314,52 +322,113 @@ def _patch_eslint_config_with_unused_imports(project_root: str) -> None:
             return
 
 
+def _project_has_typescript(project_root: str) -> bool:
+    """Check if the project uses TypeScript (.ts/.tsx files or typescript in package.json)."""
+    root = Path(project_root)
+    # Quick check: any .ts or .tsx files in common dirs
+    for pattern in ("**/*.ts", "**/*.tsx"):
+        for _ in root.glob(pattern):
+            return True
+    # Check package.json for typescript dependency
+    pkg = root / "package.json"
+    if pkg.exists():
+        try:
+            import json
+            data = json.loads(pkg.read_text(encoding="utf-8"))
+            all_deps = {}
+            all_deps.update(data.get("dependencies", {}))
+            all_deps.update(data.get("devDependencies", {}))
+            if "typescript" in all_deps:
+                return True
+        except Exception:
+            pass
+    return False
+
+
+def _detect_framework_from_package(project_root: str) -> Optional[str]:
+    """Detect framework from package.json dependencies."""
+    pkg = Path(project_root) / "package.json"
+    if not pkg.exists():
+        return None
+    try:
+        import json
+        data = json.loads(pkg.read_text(encoding="utf-8"))
+        all_deps = {}
+        all_deps.update(data.get("dependencies", {}))
+        all_deps.update(data.get("devDependencies", {}))
+        if "next" in all_deps:
+            return "nextjs"
+        if "react-native" in all_deps:
+            return "react_native"
+        if "react" in all_deps:
+            return "react"
+        if "express" in all_deps:
+            return "express"
+    except Exception:
+        pass
+    return None
+
+
 def _create_eslint_config(project_root: str, framework: Optional[str]) -> None:
     """Write a framework-appropriate .eslintrc.json into project_root."""
     import json
 
-    fw = (framework or "").lower()
+    fw = (framework or _detect_framework_from_package(project_root) or "").lower()
+    has_ts = _project_has_typescript(project_root)
 
-    # Base config — always included
-    config: dict = {
-        "extends": ["eslint:recommended"],
-        "plugins": ["unused-imports"],
-        "parserOptions": {
-            "ecmaVersion": "latest",
-            "sourceType": "module",
-        },
-        "rules": {
-            "no-unused-vars": "off",
-            "unused-imports/no-unused-imports": "error",
-            "unused-imports/no-unused-vars": [
-                "warn",
-                {"vars": "all", "varsIgnorePattern": "^_", "args": "after-used", "argsIgnorePattern": "^_"},
-            ],
-        },
+    # Base config
+    extends = ["eslint:recommended"]
+    plugins = ["unused-imports"]
+    parser_options: dict = {
+        "ecmaVersion": "latest",
+        "sourceType": "module",
+    }
+    rules: dict = {
+        "no-unused-vars": "off",
+        "unused-imports/no-unused-imports": "error",
+        "unused-imports/no-unused-vars": [
+            "warn",
+            {"vars": "all", "varsIgnorePattern": "^_", "args": "after-used", "argsIgnorePattern": "^_"},
+        ],
     }
 
-    if fw in ("react", "react_native"):
-        config["env"] = {"browser": True, "es2021": True}
-        config["parserOptions"]["ecmaFeatures"] = {"jsx": True}
+    config: dict = {}
 
-    elif fw in ("nextjs", "next"):
+    # TypeScript support
+    if has_ts:
+        config["parser"] = "@typescript-eslint/parser"
+        plugins.append("@typescript-eslint")
+        extends.append("plugin:@typescript-eslint/recommended")
+        rules["@typescript-eslint/no-unused-vars"] = "off"
+
+    # Framework-specific env and parser options
+    if fw in ("react", "react_native", "nextjs", "next"):
+        parser_options["ecmaFeatures"] = {"jsx": True}
+
+    if fw in ("nextjs", "next"):
         config["env"] = {"browser": True, "node": True, "es2021": True}
-
+    elif fw in ("react", "react_native"):
+        config["env"] = {"browser": True, "es2021": True}
     elif fw in ("express", "nodejs", "node"):
         config["env"] = {"node": True, "es2021": True}
-
     else:
-        # Generic JS project
         config["env"] = {"browser": True, "node": True, "es2021": True}
+
+    config["extends"] = extends
+    config["plugins"] = plugins
+    config["parserOptions"] = parser_options
+    config["rules"] = rules
 
     config_path = Path(project_root) / ".eslintrc.json"
     config_path.write_text(
         json.dumps(config, indent=2),
         encoding="utf-8",
     )
+    detected = fw or "generic"
+    ts_label = " + TypeScript" if has_ts else ""
     print(
-        f"{_CYAN}[LINT] Created default .eslintrc.json for "
-        f"framework='{framework or 'generic'}' in {project_root}{_RESET}"
+        f"{_CYAN}[LINT] Created .eslintrc.json for "
+        f"{detected}{ts_label} in {project_root}{_RESET}"
     )
 
 
