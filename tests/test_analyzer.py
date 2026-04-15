@@ -454,6 +454,33 @@ class TestJavaScriptAnalyzer(unittest.TestCase):
         violations = self.analyzer.run_ast_check("test.tsx", code, rule, "duplicate_strings")
         self.assertEqual(len(violations), 0)
 
+    def test_duplicate_strings_no_cross_quote_false_match(self) -> None:
+        """Ensure ', label: ' and ' className=' aren't flagged (cross-quote artifacts)."""
+        code = (
+            "{ icon: Users, value: '500+', label: 'Happy Clients' },\n"
+            "{ icon: Star, value: '100+', label: 'Projects Done' },\n"
+            "{ icon: Award, value: '50+', label: 'Awards Won' },\n"
+            "{ icon: Globe, value: '20+', label: 'Countries' },\n"
+        )
+        rule = _rule("JSTEST", "duplicate_strings", "warning")
+        rule["threshold"] = 3
+        violations = self.analyzer.run_ast_check("test.tsx", code, rule, "duplicate_strings")
+        flagged = [v.message for v in violations]
+        for msg in flagged:
+            self.assertNotIn("label", msg.lower())
+
+    def test_duplicate_strings_skips_jsx_attr_values(self) -> None:
+        """href, htmlFor, id values in JSX should not be flagged."""
+        code = (
+            '<label htmlFor="subject">Subject</label>\n'
+            '<input id="subject" name="subject" />\n'
+            '<label htmlFor="message">Message</label>\n'
+        )
+        rule = _rule("JSTEST", "duplicate_strings", "warning")
+        rule["threshold"] = 3
+        violations = self.analyzer.run_ast_check("test.tsx", code, rule, "duplicate_strings")
+        self.assertEqual(len(violations), 0)
+
     # -- unused imports JS (SonarQube) -------------------------------------
 
     def test_unused_import_detected(self) -> None:

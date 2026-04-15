@@ -357,29 +357,53 @@ class JavaScriptAnalyzer(BaseAnalyzer):
         # If more than half the tokens look like CSS classes, skip it
         return css_hits >= len(tokens) * 0.5
 
+    # Common HTML/JSX attribute values and short identifiers that are not worth extracting
+    _SKIP_STRINGS = frozenset({
+        "submit", "button", "text", "email", "password", "number", "search",
+        "checkbox", "radio", "hidden", "file", "image", "reset", "color",
+        "date", "time", "url", "tel", "range", "select", "option",
+        "subject", "message", "content", "title", "description", "label",
+        "value", "name", "type", "method", "action", "target", "placeholder",
+        "required", "disabled", "checked", "readonly", "multiple",
+        "GET", "POST", "PUT", "DELETE", "PATCH",
+    })
+
     def _check_duplicate_strings(
         self, file_path: str, content: str, rule: Dict[str, Any]
     ) -> List[Violation]:
         """Flag string literals that appear 3+ times (extract to constant)."""
         threshold = rule.get("threshold", 3)
         violations = []
-        # Find all string literals >= 6 chars (skip short ones like 'id', 'a')
-        string_re = re.compile(r'''['"]([^'"\n]{6,})['"]''')
-        # Regex to detect className= or class= attribute context
-        classname_re = re.compile(r'''(?:className|class)\s*=\s*['"]''')
+        # Use backreference \1 to ensure opening and closing quotes match
+        string_re = re.compile(r'''(['"])([^'"\n]{8,})\1''')
+        # Regex to detect JSX attribute context (className=, href=, id=, htmlFor=, etc.)
+        jsx_attr_re = re.compile(r'''(?:className|class|href|htmlFor|id|name|type|placeholder|aria-\w+)\s*=\s*['"]''')
+        # Detect syntax fragments captured across adjacent string boundaries
+        # e.g. ', label: ' or ' className=' — these start/end with punctuation or whitespace
+        syntax_re = re.compile(r'''^[\s,;]|[\s,;=]$|^\W.*\w+\s*[:=]\s*$''')
         all_strings: List[Tuple[str, int]] = []
         for i, line in enumerate(content.splitlines(), start=1):
             stripped = line.strip()
             if stripped.startswith('//') or stripped.startswith('*') or stripped.startswith('import '):
                 continue
             for m in string_re.finditer(line):
-                val = m.group(1)
-                # Skip strings inside className= or class= attributes
+                val = m.group(2)
+                # Skip strings inside JSX attribute contexts
                 prefix = line[:m.start()]
-                if classname_re.search(prefix):
+                if jsx_attr_re.search(prefix):
                     continue
                 # Skip strings that look like CSS/Tailwind class names
                 if self._is_css_class_string(val):
+                    continue
+                # Skip common HTML identifiers / attribute values
+                if val.lower() in self._SKIP_STRINGS:
+                    continue
+                # Skip strings that are just URLs or paths
+                if val.startswith('/') or val.startswith('http'):
+                    continue
+                # Skip strings that look like syntax fragments captured between
+                # adjacent string boundaries (e.g. ', label: ' or ' className=')
+                if syntax_re.search(val):
                     continue
                 all_strings.append((val, i))
 
